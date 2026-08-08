@@ -3,79 +3,17 @@ import React, { useState, useRef } from 'react';
 import { Upload, Sliders, Moon, Sun, Globe, Play, Download, CheckCircle, FileAudio, Settings, X, Loader2, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AudioReport, processAudio, getReferenceTargets, guessGenre } from './lib/audio';
-import { AudioPlayer } from './components/AudioPlayer';
-import { EqVisualizer } from './components/EqVisualizer';
+import { AudioPlayer } from './components/audio/AudioPlayer';
+import { EqVisualizer } from './components/audio/EqVisualizer';
 import pkg from '../package.json';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 
-type AudioFile = {
-  id: string;
-  file: File;
-  status: 'idle' | 'processing' | 'done' | 'error';
-  progress: number;
-  step: string;
-  blob?: Blob;
-  report?: AudioReport;
-  specs?: { sampleRate: number; bitDepth: number; channels: number; duration?: number } | null;
-  warmth?: number;
-  brightness?: number;
-  intensity?: number;
-};
-
-async function getWavSpecs(file: File) {
-  if (!file.name.toLowerCase().endsWith('.wav')) return null;
-  try {
-    const buffer = await file.slice(0, 8192).arrayBuffer();
-    const view = new DataView(buffer);
-    if (view.byteLength < 12) return null;
-    if (view.getUint32(0, false) !== 0x52494646) return null; // 'RIFF'
-    if (view.getUint32(8, false) !== 0x57415645) return null; // 'WAVE'
-
-    let offset = 12;
-    let format = null;
-    let dataSize = 0;
-    while (offset < view.byteLength - 8) {
-      const chunkId = view.getUint32(offset, false);
-      const chunkSize = view.getUint32(offset + 4, true);
-      if (chunkId === 0x666d7420) { // 'fmt '
-        if (offset + 24 > view.byteLength) return null;
-        const channels = view.getUint16(offset + 10, true);
-        const sampleRate = view.getUint32(offset + 12, true);
-        const bitDepth = view.getUint16(offset + 22, true);
-        format = { channels, sampleRate, bitDepth };
-      } else if (chunkId === 0x64617461) { // 'data'
-        dataSize = chunkSize;
-        break;
-      }
-      offset += 8 + chunkSize;
-    }
-    if (format) {
-      let duration = undefined;
-      if (dataSize > 0) {
-         duration = dataSize / (format.sampleRate * format.channels * (format.bitDepth / 8));
-      }
-      return { ...format, duration };
-    }
-    return null;
-  } catch (e) {
-    console.error("Failed to read WAV specs", e);
-    return null;
-  }
-}
-
-function formatDuration(seconds?: number) {
-  if (seconds === undefined) return '';
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-const PROFILES = [
-  { id: 'music', name: 'Music Platforms', descKey: 'profile_default_desc' },
-  { id: 'youtube', name: 'YouTube', descKey: 'profile_youtube_desc' },
-  { id: 'tiktok', name: 'TikTok', descKey: 'profile_tiktok_desc' }
-];
+import { AudioFile } from './types';
+import { Header } from './components/layout/Header';
+import { FileUploader } from './components/audio/FileUploader';
+import { getWavSpecs, formatDuration } from './utils/audioHelpers';
+import { PROFILES } from './constants/profiles';
 
 export default function App() {
   const { t, i18n } = useTranslation();
@@ -252,68 +190,16 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#0C0C0E] text-gray-100 p-6 font-sans">
       <div className="max-w-4xl mx-auto">
-        
-        {/* Header */}
-        <header className="flex flex-col mb-12 py-4 border-b border-gray-800">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-indigo-500 rounded-lg flex items-center justify-center shadow-[0_0_15px_rgba(99,102,241,0.3)]">
-                <Sliders className="text-white w-6 h-6" />
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold tracking-tight">{t('app_title')}</h1>
-                <p className="text-sm text-gray-400 font-medium">{t('app_subtitle')}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-4">
-              <button 
-                onClick={() => {
-                  const newLang = i18n.language === 'en' ? 'fr' : 'en';
-                  i18n.changeLanguage(newLang);
-                }}
-                className="p-2 text-gray-400 hover:text-indigo-500 transition-colors"
-                aria-label={t('lang_toggle')}
-                title={t('lang_toggle')}
-              >
-                <Globe className="w-5 h-5" />
-              </button>
-              <div className="text-xs font-mono text-gray-500 bg-gray-900 px-3 py-1.5 rounded-full border border-gray-800">
-                v{pkg.version}
-              </div>
-            </div>
-          </div>
-        </header>
-
+        <Header />
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          
-          {/* Main Content */}
           <div className="lg:col-span-2 space-y-6">
-            
-            {/* Dropzone */}
-            <div 
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              onClick={() => fileInputRef.current?.click()}
-              className={`
-                border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all duration-200
-                ${isDragging ? 'border-indigo-500 bg-indigo-500/5' : 'border-gray-800 hover:border-gray-700 hover:bg-gray-900'}
-              `}
-            >
-              <input 
-                type="file" 
-                ref={fileInputRef} 
-                onChange={handleFileInput} 
-                className="hidden" 
-                multiple 
-                accept="audio/*,.wav" 
-              />
-              <div className="w-16 h-16 bg-gray-900 rounded-full flex items-center justify-center mx-auto mb-4 border border-gray-800">
-                <Upload className={`w-8 h-8 ${isDragging ? 'text-indigo-500' : 'text-gray-400'}`} />
-              </div>
-              <h3 className="text-lg font-medium mb-2">{t("upload_title")}</h3>
-              <p className="text-gray-500 text-sm">{t("upload_desc")}</p>
-            </div>
+            <FileUploader 
+              isDragging={isDragging} 
+              onDragOver={handleDragOver} 
+              onDragLeave={handleDragLeave} 
+              onDrop={handleDrop} 
+              onFileInput={handleFileInput} 
+            />
 
             {/* File List */}
             <AnimatePresence>
