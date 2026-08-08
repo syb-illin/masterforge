@@ -1,0 +1,6 @@
+{
+  "name": "MasterForge",
+  "description": "Automated audio reprocessing for raw WAV files",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
