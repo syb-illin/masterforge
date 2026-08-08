@@ -1,5 +1,5 @@
-import { render, screen, fireEvent } from '@testing-library/react';
-import { expect, vi, describe, it, beforeEach } from 'vitest';
+import { render } from '@testing-library/react';
+import { vi, describe, it, beforeEach } from 'vitest';
 import App from './App';
 import './i18n';
 

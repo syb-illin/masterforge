@@ -226,20 +226,6 @@ export function AudioPlayer({ rawFile, processedBlob }: { rawFile: File, process
     }
   };
 
-  const handleScrub = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!audioCtxRef.current || !rawBufferRef.current) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pos = (e.clientX - rect.left) / rect.width;
-    const newTime = Math.max(0, Math.min(pos * duration, duration));
-    
-    setCurrentTime(newTime);
-    pauseTimeRef.current = newTime;
-    
-    if (isPlaying) {
-      stopPlayback();
-      startPlayback(newTime);
-    }
-  };
 
   // Drawing Canvas
   useEffect(() => {

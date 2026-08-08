@@ -76,7 +76,7 @@ export async function processAudio(
   try {
     audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
     log.debug(`Audio decoded: ${audioBuffer.duration}s, ${audioBuffer.numberOfChannels} channels, ${audioBuffer.sampleRate}Hz`);
-  } catch (err) {
+  } catch (_err) {
     log.error('Failed to decode audio data', err);
     audioContext.close();
     throw err;
@@ -84,8 +84,8 @@ export async function processAudio(
     audioContext.close();
   }
   
-  let targetLufs = targets.targetLufs !== undefined ? targets.targetLufs : -14;
-  let targetTruePeak = targets.targetTruePeak !== undefined ? targets.targetTruePeak : -1.0;
+  const targetLufs = targets.targetLufs !== undefined ? targets.targetLufs : -14;
+  const targetTruePeak = targets.targetTruePeak !== undefined ? targets.targetTruePeak : -1.0;
 
   // Yield to main thread without artificial delays
   const yieldToMain = () => new Promise(res => setTimeout(res, 0));
@@ -119,7 +119,6 @@ export async function processAudio(
     tapeDrive *= 0.7;
   }
   
-  const tapePreEmphasisGain = lacksBass ? 1.0 : (isMuddy ? 4.5 : 2.5);
 
 
   // @ts-ignore
@@ -160,7 +159,7 @@ export async function processAudio(
   await yieldToMain();
   
   const eqFrequencies = [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
-  let msOutputNode: AudioNode;
+  
 
   // 1. Ultra-Precise Digital Parametric EQ (Pro-Q Style)
   onProgress('Ultra-Precise Linear-Style Parametric EQ', 35);
@@ -274,7 +273,7 @@ export async function processAudio(
   Tone.connect(prevStereoNode, stereoWidener);
   
   // Convert Tone node back to native for the rest of the chain
-  msOutputNode = offlineCtx.createGain();
+  const msOutputNode = offlineCtx.createGain();
   Tone.connect(stereoWidener, msOutputNode);
 
   // 2. AI Artifact Reduction & Smooth Saturation
@@ -584,8 +583,8 @@ export async function processAudio(
       return Math.max(0, Math.min(10, score));
     };
 
-    let aiArtifactScore = calculateArtifactScore(stats);
-    let refinedAiArtifactScore = calculateArtifactScore(refinedStats) * 0.65; // Apply reduction for cleanup
+    const aiArtifactScore = calculateArtifactScore(stats);
+    const refinedAiArtifactScore = calculateArtifactScore(refinedStats) * 0.65; // Apply reduction for cleanup
     
     // Map KB anomalies to user-facing characteristics
     if (stats.rolloff < 15500) characteristics.push('16kHz Cutoff (32kHz Upsampling Signature)');
@@ -597,8 +596,6 @@ export async function processAudio(
     if (aiArtifactScore >= 6.5) characteristics.push('High probability of Neural Audio Codec artifacts');
     if (characteristics.length === 0) characteristics.push('Well balanced');
 
-    const bassMonoFreq = 150;
-    const widthBoost = stats.stereoWidth < 0.2 ? 1.5 : (stats.stereoWidth > 0.8 ? -1.0 : 0);
     const report: AudioReport = {
       analysis: {
         lufs: stats.lufs,
@@ -653,7 +650,7 @@ export async function processAudio(
     onProgress('Complete', 100);
     return { blob: wavBlob, report };
     
-  } catch (err) {
+  } catch (_err) {
     log.error('Audio processing failed', err);
     throw err;
   }
@@ -671,22 +668,6 @@ function makeTapeCurve(amount: number) {
 }
 
 // Emulates analog tube circuitry (asymmetrical clipping for musical even-order harmonics)
-function makeTubeCurve(amount: number) {
-  const k = typeof amount === 'number' ? amount : 2;
-  const n_samples = 44100;
-  const curve = new Float32Array(n_samples);
-  for (let i = 0; i < n_samples; ++i) {
-    let x = (i * 2) / n_samples - 1;
-    // Asymmetric distortion: softer clipping on positive peaks, harder on negative
-    if (x < 0) {
-      curve[i] = -Math.pow(Math.abs(x), 1.0 + (k * 0.05));
-    } else {
-      curve[i] = Math.tanh(x * k) / Math.tanh(k);
-    }
-  }
-  return curve;
-}
-
 const CHUNK_YIELD_MS = 0; // Yield macro-task
 const yieldThread = () => new Promise(res => setTimeout(res, CHUNK_YIELD_MS));
 
@@ -939,12 +920,9 @@ async function calculateLUFS(buffer: AudioBuffer): Promise<{lufs: number, lra: n
   source.start();
   
   const rendered = await ctx.startRendering();
-  let totalPower = 0;
   
-  const CHUNK_SIZE = 48000 * 2;
   
   // To estimate LRA, we calculate short-term blocks (3s blocks, 2s overlap -> 1s hop)
-  const hopSize = buffer.sampleRate;
   const blockLength = buffer.sampleRate * 3;
   const shortTermPowers = [];
   
@@ -954,50 +932,68 @@ async function calculateLUFS(buffer: AudioBuffer): Promise<{lufs: number, lra: n
     channelPowers.push(rendered.getChannelData(c));
   }
   
-  // BS.1770-4 Gated Measurement (400ms blocks, 75% overlap)
-  const gateBlockLength = Math.floor(buffer.sampleRate * 0.4);
-  const gateHopSize = Math.floor(buffer.sampleRate * 0.1);
-  const blockPowers = [];
+  // OPTIMIZED BS.1770-4 Gated Measurement & LRA
+  // Since gateHopSize (0.1s) divides gateBlockLength (0.4s) and hopSize (1.0s),
+  // we can calculate power in 0.1s chunks and sum them up to drastically improve performance.
   
-  for (let pos = 0; pos < buffer.length - gateBlockLength; pos += gateHopSize) {
-    let blockPower = 0;
-    for (let c = 0; c < rendered.numberOfChannels; c++) {
-      let sum = 0;
-      for (let i = pos; i < pos + gateBlockLength; i++) {
-        sum += channelPowers[c][i] * channelPowers[c][i];
+  const gateHopSize = Math.floor(buffer.sampleRate * 0.1);
+  const gateBlockLength = Math.floor(buffer.sampleRate * 0.4);
+  const numHops = Math.floor(buffer.length / gateHopSize);
+  const hopPowers = new Float64Array(numHops);
+  
+  for(let h = 0; h < numHops; h++) {
+    const start = h * gateHopSize;
+    const end = start + gateHopSize;
+    let sum = 0;
+    for(let c = 0; c < rendered.numberOfChannels; c++){
+      const data = channelPowers[c];
+      for(let i = start; i < end; i++){
+        sum += data[i] * data[i];
       }
-      blockPower += sum / gateBlockLength;
     }
+    hopPowers[h] = sum;
+  }
+  
+  // Gated Measurement (400ms = 4 hops)
+  const blockPowers = [];
+  const hopsInGateBlock = Math.floor(gateBlockLength / gateHopSize); // 4
+  
+  for (let h = 0; h <= numHops - hopsInGateBlock; h++) {
+    let sum = 0;
+    for(let j = 0; j < hopsInGateBlock; j++){
+      sum += hopPowers[h + j];
+    }
+    const blockPower = sum / gateBlockLength;
+    
     if (blockPower > 0) {
       const lufsBlock = -0.691 + 10 * Math.log10(blockPower);
-      // Absolute gate: -70 LUFS
       if (lufsBlock >= -70) {
         blockPowers.push(blockPower);
       }
     }
   }
-  
+
   let gatedTotalPower = 0;
   if (blockPowers.length > 0) {
     const avgPower = blockPowers.reduce((a, b) => a + b, 0) / blockPowers.length;
-    const relativeThreshold = -0.691 + 10 * Math.log10(avgPower) - 10; // -10 LU relative gate
+    const relativeThreshold = -0.691 + 10 * Math.log10(avgPower) - 10;
     
     const gatedBlocks = blockPowers.filter(p => (-0.691 + 10 * Math.log10(p)) >= relativeThreshold);
     gatedTotalPower = gatedBlocks.length > 0 ? gatedBlocks.reduce((a, b) => a + b, 0) / gatedBlocks.length : 0;
   }
-  
+
   const lufs = gatedTotalPower === 0 ? -70 : -0.691 + 10 * Math.log10(gatedTotalPower);
 
-  // Calculate LRA (3s blocks, 66% overlap)
-  for (let pos = 0; pos < buffer.length - blockLength; pos += hopSize) {
-    let blockPower = 0;
-    for (let c = 0; c < rendered.numberOfChannels; c++) {
-      let sum = 0;
-      for (let i = pos; i < pos + blockLength; i++) {
-        sum += channelPowers[c][i] * channelPowers[c][i];
-      }
-      blockPower += sum / blockLength;
+  // Calculate LRA (3s blocks, 1s overlap -> 30 hops per block, 10 hops step)
+  const lraHopsInBlock = 30;
+  const lraHopStep = 10;
+  
+  for (let h = 0; h <= numHops - lraHopsInBlock; h += lraHopStep) {
+    let sum = 0;
+    for(let j = 0; j < lraHopsInBlock; j++){
+      sum += hopPowers[h + j];
     }
+    const blockPower = sum / blockLength;
     if (blockPower > 0) {
       const lufsBlock = -0.691 + 10 * Math.log10(blockPower);
       if (lufsBlock >= -70) shortTermPowers.push(lufsBlock);
@@ -1014,37 +1010,20 @@ async function calculateLUFS(buffer: AudioBuffer): Promise<{lufs: number, lra: n
   return { lufs, lra };
 }
 
-function rmsToDb(rms: number) {
-  return 20 * Math.log10(rms);
-}
 
 function dbToGain(db: number) {
   return Math.pow(10, db / 20);
 }
 
-function makeDistortionCurve(amount: number) {
-  const k = typeof amount === 'number' ? amount : 50;
-  const n_samples = 44100;
-  const curve = new Float32Array(n_samples);
-  const deg = Math.PI / 180;
-  for (let i = 0; i < n_samples; ++i) {
-    const x = (i * 2) / n_samples - 1;
-    curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
-  }
-  return curve;
-}
-
 async function bufferToWav(abuffer: AudioBuffer, bitDepth: number, onProgress?: (step: string, progress: number) => void): Promise<Blob> {
-  let numOfChan = abuffer.numberOfChannels,
-    bytesPerSample = bitDepth === 32 ? 4 : bitDepth === 24 ? 3 : 2,
-    length = abuffer.length * numOfChan * bytesPerSample + 44,
-    buffer = new ArrayBuffer(length),
-    view = new DataView(buffer),
-    channels: Float32Array[] = [],
-    i,
-    sample,
-    offset = 0,
-    pos = 0;
+  const numOfChan = abuffer.numberOfChannels;
+  const bytesPerSample = bitDepth === 32 ? 4 : bitDepth === 24 ? 3 : 2;
+  const length = abuffer.length * numOfChan * bytesPerSample + 44;
+  const buffer = new ArrayBuffer(length);
+  const view = new DataView(buffer);
+  const channels: Float32Array[] = [];
+  let i;
+  let pos = 0;
 
   function setUint16(data: number) {
     view.setUint16(pos, data, true);
@@ -1079,36 +1058,37 @@ async function bufferToWav(abuffer: AudioBuffer, bitDepth: number, onProgress?: 
   // Noise shaping error buffers
   const errBuffer = Array.from({ length: numOfChan }, () => new Float32Array(4));
   
-  for (i = 0; i < abuffer.length; i++) {
-    if (i % 44100 === 0 && onProgress) {
-      onProgress('Encoding WAV', 95 + (i / abuffer.length) * 5);
-    }
-    
-    for (let j = 0; j < numOfChan; j++) {
-      let sample = channels[j][i];
-      
-      if (bitDepth < 32) {
-         // MBIT+ Style Psychoacoustic Noise Shaping (3rd Order)
-         const shapingError = 2.033 * errBuffer[j][0] - 1.483 * errBuffer[j][1] + 0.450 * errBuffer[j][2];
-         sample += shapingError;
-         
-         const LSB = Math.pow(2, -(bitDepth - 1));
-         const rand1 = (Math.random() * 2 - 1) * LSB;
-         const rand2 = (Math.random() * 2 - 1) * LSB;
-         sample += (rand1 - rand2); // TPDF Dither
-      }
-      
-      sample = Math.max(-1, Math.min(1, sample));
-      
-      if (bitDepth === 32) {
+  // Process audio data per channel and bit depth for max performance
+  if (bitDepth === 32) {
+    for (i = 0; i < abuffer.length; i++) {
+      if (i % 44100 === 0 && onProgress) onProgress('Encoding WAV', 95 + (i / abuffer.length) * 5);
+      for (let j = 0; j < numOfChan; j++) {
+        const sample = Math.max(-1, Math.min(1, channels[j][i]));
         view.setFloat32(pos, sample, true);
         pos += 4;
-      } else if (bitDepth === 24) {
-        const factor = 8388607;
-        let preQuant = sample * factor;
+      }
+    }
+  } else if (bitDepth === 24) {
+    const factor = 8388607;
+    for (i = 0; i < abuffer.length; i++) {
+      if (i % 44100 === 0 && onProgress) onProgress('Encoding WAV (24-bit Dithered)', 95 + (i / abuffer.length) * 5);
+      for (let j = 0; j < numOfChan; j++) {
+        let sample = channels[j][i];
+        
+        // MBIT+ Style Psychoacoustic Noise Shaping (3rd Order)
+        const shapingError = 2.033 * errBuffer[j][0] - 1.483 * errBuffer[j][1] + 0.450 * errBuffer[j][2];
+        sample += shapingError;
+        
+        const LSB = Math.pow(2, -23); // 24-bit
+        const rand1 = (Math.random() * 2 - 1) * LSB;
+        const rand2 = (Math.random() * 2 - 1) * LSB;
+        sample += (rand1 - rand2); // TPDF Dither
+        
+        sample = Math.max(-1, Math.min(1, sample));
+        
+        const preQuant = sample * factor;
         let quantized = Math.round(preQuant);
         
-        // Update error history
         const err = (preQuant - quantized) / factor;
         errBuffer[j][2] = errBuffer[j][1];
         errBuffer[j][1] = errBuffer[j][0];
@@ -1117,14 +1097,32 @@ async function bufferToWav(abuffer: AudioBuffer, bitDepth: number, onProgress?: 
         if (quantized < -8388608) quantized = -8388608;
         if (quantized > 8388607) quantized = 8388607;
         
-        let writeVal = quantized < 0 ? quantized + 16777216 : quantized;
+        const writeVal = quantized < 0 ? quantized + 16777216 : quantized;
         view.setUint8(pos, writeVal & 0xff);
         view.setUint8(pos + 1, (writeVal >> 8) & 0xff);
         view.setUint8(pos + 2, (writeVal >> 16) & 0xff);
         pos += 3;
-      } else {
-        const factor = 32767;
-        let preQuant = sample * factor;
+      }
+    }
+  } else {
+    const factor = 32767;
+    for (i = 0; i < abuffer.length; i++) {
+      if (i % 44100 === 0 && onProgress) onProgress('Encoding WAV (16-bit Dithered)', 95 + (i / abuffer.length) * 5);
+      for (let j = 0; j < numOfChan; j++) {
+        let sample = channels[j][i];
+        
+        // MBIT+ Style Psychoacoustic Noise Shaping (3rd Order)
+        const shapingError = 2.033 * errBuffer[j][0] - 1.483 * errBuffer[j][1] + 0.450 * errBuffer[j][2];
+        sample += shapingError;
+        
+        const LSB = Math.pow(2, -15); // 16-bit
+        const rand1 = (Math.random() * 2 - 1) * LSB;
+        const rand2 = (Math.random() * 2 - 1) * LSB;
+        sample += (rand1 - rand2); // TPDF Dither
+        
+        sample = Math.max(-1, Math.min(1, sample));
+        
+        const preQuant = sample * factor;
         let quantized = Math.round(preQuant);
         
         const err = (preQuant - quantized) / factor;
@@ -1167,7 +1165,7 @@ export async function guessGenre(file: File): Promise<string> {
     }
     
     return "Mixed / General";
-  } catch (err) {
+  } catch (_err) {
     return "Unknown";
   }
 }

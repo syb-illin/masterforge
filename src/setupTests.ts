@@ -1,67 +1,80 @@
-import '@testing-library/jest-dom'
-import { vi } from 'vitest'
+import '@testing-library/jest-dom';
 
-// Mock AudioContext
 class MockAudioContext {
-  currentTime = 0;
-  sampleRate = 44100;
-  createGain = vi.fn(() => ({
-    gain: { value: 1, setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
-    connect: vi.fn(),
-    disconnect: vi.fn()
-  }));
-  createDynamicsCompressor = vi.fn(() => ({
-    threshold: { value: -24 },
-    knee: { value: 30 },
-    ratio: { value: 12 },
-    attack: { value: 0.003 },
-    release: { value: 0.25 },
-    connect: vi.fn(),
-    disconnect: vi.fn()
-  }));
-  createBiquadFilter = vi.fn(() => ({
-    type: 'lowpass',
-    frequency: { value: 350 },
-    Q: { value: 1 },
-    gain: { value: 0 },
-    connect: vi.fn(),
-    disconnect: vi.fn()
-  }));
-  createBufferSource = vi.fn(() => ({
-    buffer: null,
-    connect: vi.fn(),
-    start: vi.fn(),
-    stop: vi.fn()
-  }));
-  decodeAudioData = vi.fn().mockResolvedValue({
-    duration: 1,
-    length: 44100,
-    sampleRate: 44100,
-    numberOfChannels: 2,
-    getChannelData: vi.fn(() => new Float32Array(44100))
-  });
-  destination = {
-    channelCount: 2
-  };
-}
-
-class MockOfflineAudioContext extends MockAudioContext {
-  public length: number;
-  constructor(channels: any, length: any, sampleRate: any) {
-    super();
-    this.length = length;
+  createGain() {
+    return {
+      connect: () => {},
+      gain: { value: 1, setValueAtTime: () => {}, setTargetAtTime: () => {} }
+    };
   }
-  startRendering = vi.fn().mockResolvedValue({
-    duration: 1,
-    length: 44100,
-    sampleRate: 44100,
-    numberOfChannels: 2,
-    getChannelData: vi.fn(() => new Float32Array(44100))
+  createBufferSource() {
+    return {
+      connect: () => {},
+      start: () => {},
+      stop: () => {},
+      disconnect: () => {},
+      buffer: null
+    };
+  }
+  createAnalyser() {
+    return {
+      connect: () => {},
+      getByteFrequencyData: () => {},
+      getFloatTimeDomainData: () => {},
+      frequencyBinCount: 1024,
+      smoothingTimeConstant: 0.8,
+      fftSize: 2048
+    };
+  }
+  createChannelSplitter() {
+    return {
+      connect: () => {}
+    };
+  }
+  decodeAudioData() {
+    return Promise.resolve({
+      duration: 100,
+      length: 441000,
+      numberOfChannels: 2,
+      sampleRate: 44100,
+      getChannelData: () => new Float32Array(441000)
+    });
+  }
+  close() {
+    return Promise.resolve();
+  }
+  get currentTime() {
+    return 0;
+  }
+}
+(window as any).AudioContext = MockAudioContext;
+(window as any).webkitAudioContext = MockAudioContext;
+
+(window as any).URL.createObjectURL = () => 'blob:test';
+(window as any).URL.revokeObjectURL = () => {};
+
+if (typeof window.matchMedia !== 'function') {
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => {},
+    }),
   });
 }
 
-global.window.AudioContext = MockAudioContext as any;
-global.window.OfflineAudioContext = MockOfflineAudioContext as any;
+const mockCanvasContext = new Proxy({}, {
+  get: (target, prop) => {
+    if (prop === 'measureText') return () => ({ width: 10 });
+    if (prop === 'createLinearGradient') return () => ({ addColorStop: () => {} });
+    return () => {};
+  }
+});
 
-global.URL.createObjectURL = vi.fn(() => 'blob:test');
-global.URL.revokeObjectURL = vi.fn();
+(HTMLCanvasElement.prototype as any).getContext = () => mockCanvasContext;
